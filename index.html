@@ -33,6 +33,9 @@ select{background:var(--input-bg);border:1px solid var(--border);color:var(--tex
 select:focus{border-color:var(--azul-light);}
 input[type=text]{background:var(--input-bg);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-family:'Inter',sans-serif;font-size:13px;outline:none;transition:border-color 0.2s;}
 input[type=text]:focus{border-color:var(--azul-light);}
+input.user-search{min-width:190px;max-width:260px;flex:1;background:var(--input-bg);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-family:'Inter',sans-serif;font-size:13px;outline:none;transition:border-color 0.2s;}
+input.user-search:focus{border-color:var(--oro);}
+.user-count{color:var(--text-muted);font-size:11px;font-weight:600;min-width:70px;}
 .btn{background:var(--azul-mid);color:#fff;border:none;padding:7px 14px;border-radius:6px;font-family:'Inter',sans-serif;font-weight:600;cursor:pointer;font-size:12px;transition:all 0.2s;}
 .btn:hover{background:var(--azul-light);transform:translateY(-1px);}
 .btn:disabled{opacity:0.45;cursor:not-allowed;transform:none;}
@@ -392,7 +395,9 @@ input[type=text]:focus{border-color:var(--azul-light);}
 
 <div class="user-bar">
   <label>👤</label>
+  <input class="user-search" type="text" id="userSearch" placeholder="Buscar usuario..." oninput="renderUserSelect()" autocomplete="off">
   <select id="userSelect" onchange="switchUser()"><option value="">-- Elegí tu nombre --</option></select>
+  <span class="user-count" id="userCount"></span>
   <button class="btn" onclick="openModal()">+ Agregar</button>
 </div>
 
@@ -724,12 +729,35 @@ function fillTeamSelects(){
 // ===================== USER SELECT =====================
 function renderUserSelect(){
   const sel=document.getElementById('userSelect');
+  const searchEl=document.getElementById('userSearch');
+  const countEl=document.getElementById('userCount');
+  const search=(searchEl ? searchEl.value : '').toLowerCase().trim();
+
   sel.innerHTML='<option value="">-- Elegí tu nombre --</option>';
-  state.users.forEach(u=>{
-    const o=document.createElement('option');o.value=u.id;o.textContent=u.name;
+
+  const orderedUsers=[...state.users].sort((a,b)=>
+    (a.name||'').localeCompare((b.name||''),'es',{sensitivity:'base'})
+  );
+
+  const filteredUsers=orderedUsers.filter(u=>
+    (u.name||'').toLowerCase().includes(search)
+  );
+
+  filteredUsers.forEach(u=>{
+    const o=document.createElement('option');
+    o.value=u.id;
+    o.textContent=u.name;
     if(currentUser&&u.id===currentUser.id) o.selected=true;
     sel.appendChild(o);
   });
+
+  if(countEl){
+    if(search){
+      countEl.textContent=filteredUsers.length+' de '+state.users.length;
+    }else{
+      countEl.textContent=state.users.length+' usuarios';
+    }
+  }
 }
 
 // ===================== TABS =====================
@@ -898,6 +926,8 @@ async function addUser(){
   state.users.push(user);
   state.predictions[user.id]={};
   await pushData();
+  const userSearch=document.getElementById('userSearch');
+  if(userSearch) userSearch.value='';
   renderUserSelect(); closeModal(); resetNewPin();
   // Auto login
   currentUser=user;
