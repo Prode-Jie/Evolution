@@ -665,32 +665,107 @@ let saveTimer = null;
 // ===================== API =====================
 async function loadData(){
   try{
-    const r = await fetch(SUPABASE_URL+'/rest/v1/prode_state?id=eq.main&select=data', {headers:SB_HEADERS});
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const d = await r.json();
-    if(d && d[0] && d[0].data){
-      state = Object.assign({
-        users:[], predictions:{}, results:{}, realChampion:'', realRunner:'',
-        unlockedPhases:['groups'], bracketMatches:{}, realQualifiers:{}, groupsLocked:false
-      }, d[0].data);
-    }
+    // Load global state
+    const rg = await fetch(SUPABASE_URL+'/rest/v1/prode_global?id=eq.main&select=data', {headers:SB_HEADERS});
+    if(!rg.ok) throw new Error('HTTP '+rg.status);
+    const dg = await rg.json();
+    const globalData = (dg && dg[0]) ? dg[0].data : {};
+
+    // Load users
+    const ru = await fetch(SUPABASE_URL+'/rest/v1/prode_users?select=id,name,pin&order=id', {headers:SB_HEADERS});
+    if(!ru.ok) throw new Error('HTTP '+ru.status);
+    const users = await ru.json();
+
+    // Load predictions
+    const rp = await fetch(SUPABASE_URL+'/rest/v1/prode_predictions?select=user_id,data', {headers:SB_HEADERS});
+    if(!rp.ok) throw new Error('HTTP '+rp.status);
+    const preds = await rp.json();
+
+    const predictions = {};
+    preds.forEach(p => { predictions[p.user_id] = p.data; });
+
+    state = Object.assign({
+      results:{}, realChampion:'', realRunner:'',
+      unlockedPhases:['groups'], bracketMatches:{}, realQualifiers:{}, groupsLocked:false
+    }, globalData, { users, predictions });
+
   }catch(e){ console.error('loadData error:',e); showToast('❌ Error de conexión'); }
 }
 
 async function pushData(){
   setSaveStatus('save-pending','⏳ Guardando...');
   try{
-    const r = await fetch(SUPABASE_URL+'/rest/v1/prode_state?id=eq.main', {
+    // Save global state (results, config)
+    const globalData = {
+      results: state.results,
+      realChampion: state.realChampion,
+      realRunner: state.realRunner,
+      unlockedPhases: state.unlockedPhases,
+      bracketMatches: state.bracketMatches,
+      realQualifiers: state.realQualifiers,
+      groupsLocked: state.groupsLocked
+    };
+    const rg = await fetch(SUPABASE_URL+'/rest/v1/prode_global?id=eq.main', {
       method:'PATCH',
       headers:{...SB_HEADERS, 'Prefer':'return=minimal'},
-      body: JSON.stringify({data: state, updated_at: new Date().toISOString()})
+      body: JSON.stringify({data: globalData, updated_at: new Date().toISOString()})
     });
-    if(!r.ok) throw new Error('HTTP '+r.status);
+    if(!rg.ok) throw new Error('Global save failed: '+rg.status);
     setSaveStatus('save-ok','✅ Guardado');
     setTimeout(()=>{ const el=document.getElementById('save-status'); if(el)el.textContent=''; },3000);
   }catch(e){ console.error('pushData error:',e); setSaveStatus('save-err','❌ Error al guardar'); }
 }
-function scheduleSave(){ clearTimeout(saveTimer); saveTimer=setTimeout(pushData,900); }
+
+// Save only current user predictions - independent per user
+async function pushUserPredictions(userId){
+  if(!userId) return;
+  try{
+    const pdata = state.predictions[userId] || {};
+    const r = await fetch(SUPABASE_URL+'/rest/v1/prode_predictions?user_id=eq.'+userId, {
+      method:'PATCH',
+      headers:{...SB_HEADERS, 'Prefer':'return=minimal'},
+      body: JSON.stringify({data: pdata, updated_at: new Date().toISOString()})
+    });
+    if(!r.ok){
+      // If not found, insert
+      const ri = await fetch(SUPABASE_URL+'/rest/v1/prode_predictions', {
+        method:'POST',
+        headers:{...SB_HEADERS, 'Prefer':'return=minimal'},
+        body: JSON.stringify({user_id: userId, data: pdata})
+      });
+    }
+  }catch(e){ console.error('pushUserPredictions error:',e); }
+}
+
+// Save user to prode_users table
+async function pushUser(user){
+  try{
+    const r = await fetch(SUPABASE_URL+'/rest/v1/prode_users?id=eq.'+user.id, {
+      method:'PATCH',
+      headers:{...SB_HEADERS, 'Prefer':'return=minimal'},
+      body: JSON.stringify({name: user.name, pin: user.pin, updated_at: new Date().toISOString()})
+    });
+    if(!r.ok){
+      const ri = await fetch(SUPABASE_URL+'/rest/v1/prode_users', {
+        method:'POST',
+        headers:{...SB_HEADERS, 'Prefer':'return=minimal'},
+        body: JSON.stringify({id: user.id, name: user.name, pin: user.pin})
+      });
+      // Also create empty predictions row
+      await fetch(SUPABASE_URL+'/rest/v1/prode_predictions', {
+        method:'POST',
+        headers:{...SB_HEADERS, 'Prefer':'return=minimal'},
+        body: JSON.stringify({user_id: user.id, data: {}})
+      });
+    }
+  }catch(e){ console.error('pushUser error:',e); }
+}
+function scheduleSave(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>{
+    if(currentUser) pushUserPredictions(currentUser.id);
+  },900);
+}
 function setSaveStatus(cls,msg){ const el=document.getElementById('save-status'); el.textContent=msg; el.className='save-status '+cls; }
 function showToast(msg,dur=2500){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),dur); }
 
@@ -906,7 +981,7 @@ async function addUser(){
   const user={id:'u'+Date.now(), name, pin:newPinBuffer};
   state.users.push(user);
   state.predictions[user.id]={};
-  await pushData();
+  await pushUser(user);
   renderUserSelect(); closeModal(); resetNewPin();
   // Auto login
   currentUser=user;
@@ -966,7 +1041,7 @@ function saveSpecial(){
   if(!state.predictions[currentUser.id]) state.predictions[currentUser.id]={};
   state.predictions[currentUser.id].champion=document.getElementById('pick-champion').value;
   state.predictions[currentUser.id].runner=document.getElementById('pick-runner').value;
-  scheduleSave(); updateHeaderPts();
+  pushUserPredictions(currentUser.id); updateHeaderPts();
 }
 
 function savePred(matchId, phaseKey){
@@ -1335,8 +1410,7 @@ function renderPlayersAdmin() {
 async function resetUserPin(uid, name){
   if(!confirm('¿Resetear el PIN de '+name+'? La próxima vez que entre deberá crear uno nuevo.')) return;
   const user = state.users.find(u=>u.id===uid);
-  if(user){ delete user.pin; }
-  await pushData();
+  if(user){ delete user.pin; await pushUser(user); }
   renderPlayersAdmin();
   showToast('🔑 PIN de '+name+' reseteado');
 }
@@ -1345,13 +1419,14 @@ async function deletePlayer(uid, name) {
   if (!confirm('¿Eliminar a ' + name + ' y todas sus predicciones?')) return;
   state.users = state.users.filter(u => u.id !== uid);
   delete state.predictions[uid];
-  // If current user was deleted, reset
   if (currentUser && currentUser.id === uid) {
     currentUser = null;
     document.getElementById('userSelect').value = '';
     switchUser();
   }
-  await pushData();
+  // Delete from Supabase tables
+  await fetch(SUPABASE_URL+'/rest/v1/prode_predictions?user_id=eq.'+uid, {method:'DELETE', headers:SB_HEADERS});
+  await fetch(SUPABASE_URL+'/rest/v1/prode_users?id=eq.'+uid, {method:'DELETE', headers:SB_HEADERS});
   renderUserSelect();
   renderPlayersAdmin();
   renderLeaderboard();
@@ -1531,7 +1606,7 @@ async function upmSubmit(){
   } else if(upmMode==='confirm'){
     if(upmBuffer === upmTempPin){
       user.pin = upmBuffer;
-      await pushData();
+      await pushUser(user);
       document.getElementById('userPinModal').classList.remove('show');
       currentUser = user;
       document.getElementById('userSelect').value = user.id;
